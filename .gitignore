@@ -1,0 +1,22 @@
+*.pyc
+*~
+*.swp
+*.bak
+
+#Don't track mac file
+.DS_Store
+
+#Don't track mac/linux .inputrc files
+.inputrc
+
+#don't include data files
+data/*
+
+#don't include notbook checkpoint files
+*-checkpoint.ipynb
+
+#don't include pycharm project files
+.idea/*
+
+#don't include results
+*/results/*
