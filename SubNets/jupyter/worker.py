@@ -1,4 +1,5 @@
 import threading
+import copy
 import tensorflow as tf
 import numpy as np
 from custom_layers import *
@@ -15,76 +16,101 @@ class Worker(threading.Thread):
         # Create the model
         self.coordinator = self.kwargs['coordinator']
         self.hidden_layer_size = self.kwargs['hidden_layer_size']
+        self.output_size = self.kwargs['output_size']
+        self.learning_rate = self.kwargs['learning_rate']
         self.dropout_rate = self.kwargs['dropout_rate']
         self.batch_size = self.kwargs['batch_size']    
         self.epochs = self.kwargs['epochs']
+        self.global_model = self.kwargs['global_model']
+        self.model = self.kwargs['model']
+        self.update_batches = self.kwargs['update_batches']
 
-        self.img_input = tf.keras.Input(shape=(28, 28), name='img_input')
-        self.mask_input = tf.keras.Input(shape=(self.hidden_layer_size), name='mask_input')
 
-        layer1 = tf.keras.layers.Flatten(name='flatten')
-        print(layer1)
-        layer2 = tf.keras.layers.Dense(self.hidden_layer_size, activation='relu', name='encoder')
-        print(layer2)
-        layer3 = CustomDropout()
-        print(layer3)
-        layer4 = tf.keras.layers.Dense(10, name='output')
-        print(layer4)
+        self.inputs = {
+            'img': self.model.inputs['img'],
+            'mask': self.model.inputs['mask'],
+        }
 
-        h = layer1(self.img_input)
-        print("h: ", h)
-        h = layer2(h)
-        print("h: ", h)
-        h = layer3([h, self.mask_input])
-        print("h: ", h)
-        self.output = layer4(h)
-        print("output: ", self.output)
+        print(self.model.summary())
 
-        self.model = tf.keras.Model(inputs=[self.img_input, self.mask_input], outputs=self.output)
-        self.model.summary()
-        tf.keras.utils.plot_model(self.model, show_shapes=True)
-        
-        self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        
-        self.model.compile(optimizer='sgd', loss=self.loss_fn, metrics=['accuracy'])
+        #self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
+
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
+        #self.optimizer = tf.keras.optimizers.SGD(learning_rate=1e-2)
+        self.loss_metric = tf.keras.metrics.Mean()
+        self.accuracy = tf.keras.metrics.CategoricalAccuracy()
+
 
     def create_masks(self, batch_size):
         mask = np.random.rand(1, self.hidden_layer_size) <= self.dropout_rate
-        mask = mask.astype(np.int32)
+        mask = mask.astype(np.float32)
         mask = np.tile(mask, (batch_size, 1))
         return mask
 
     def run(self):
         with self.coordinator.stop_on_exception():
-            mnist = tf.keras.datasets.fashion_mnist
+            (x_train, y_train), (x_valid, y_valid) = tf.keras.datasets.mnist.load_data()
+            x_train = x_train.astype('float32') / 255
+            x_valid = x_valid.astype('float32') / 255
+            y_train = tf.keras.backend.one_hot(y_train, 10)
+            y_valid = tf.keras.backend.one_hot(y_valid, 10)
+            #masks_train = np.ones((x_train.shape[0], 128))
+            masks_train = self.create_masks(x_train.shape[0])
+            masks_valid = np.ones((x_valid.shape))
+            print("x_train.shape: ", x_train.shape)
+            print("y_train.shape: ", y_train.shape)
+            print("masks_train.shape: ", masks_train.shape)
+            print("x_valid.shape: ", x_valid.shape)
+            print("y_valid.shape: ", y_valid.shape)
+            print("masks_valid.shape: ", masks_valid.shape)
 
-            (x_train, y_train), (x_test, y_test) = mnist.load_data()
-            x_train, x_test = x_train / 255.0, x_test / 255.0
+            #train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+            train_dataset = tf.data.Dataset.from_tensor_slices((x_train, masks_train, y_train))
+            train_dataset = train_dataset.shuffle(buffer_size=1024).batch(self.batch_size)
+            print(train_dataset)
+            '''
+            valid_dataset = tf.data.Dataset.from_tensor_slices([x_valid, masks_valid, y_valid])
+            valid_dataset = valid_dataset.batch(self.batch_size)
+            print(valid_dataset)
+            '''
+            fc = self.model
 
-            train_samples = x_train.shape[0]
-            batches = train_samples // self.batch_size
-            dropout_rate = 1-0.2
+            # Iterate over epochs.
+            for epoch in range(self.epochs):
+              print('Start of epoch %d' % (epoch,))
+            
+              #self.model.copy_weights(self.global_model)
+              #self.loss_metric.reset_states()
+              #self.accuracy.reset_states()
+              fc.set_weights(copy.deepcopy(self.global_model.get_weights()))
 
-            copies = int(train_samples/self.batch_size)
-            extra = train_samples - copies*self.batch_size
+              # Iterate over the batches of the dataset.
+              #for step, (x_train, y_train) in enumerate(train_dataset):
+              for step, (x_train, masks_train, y_train) in enumerate(train_dataset):
+                with tf.GradientTape() as tape:
+                  #masks = np.ones((x_train.shape[0], 128))
+                  #masks_train = self.create_masks(x_train.shape[0])
+                  #logits = fc([x_train, masks])
+                  logits = fc([x_train, masks_train])
+                  # Compute reconstruction loss
+                  #loss = mse_loss_fn(y_train, logits)
+                  loss = self.loss_fn(y_train, logits)
 
-            # Train the model
-            for epoch_idx in range(self.epochs):
-                loss_values = []
-                for batch_idx in range(batches):
-                    mask = self.create_masks(self.batch_size)
-                    current_batch = x_train[batch_idx*self.batch_size:(batch_idx+1)*self.batch_size]
-                    labels = y_train[batch_idx*self.batch_size:(batch_idx+1)*self.batch_size]
-                    loss_value = self.model.train_on_batch([current_batch, mask], y=labels)
-                    loss_values.append(loss_value)
+                self.accuracy.update_state(y_train, logits)
 
-                excess_samples = train_samples % self.batch_size
-                if excess_samples > 0:
-                    mask = self.create_masks(excess_samples)
-                    current_batch = x_train[batches*self.batch_size:]
-                    labels = y_train[batches*self.batch_size:]
-                    loss_value = self.model.train_on_batch([current_batch, mask], y=labels)
-                    loss_values.append(loss_value)
+                grads = tape.gradient(loss, fc.trainable_weights)
+                #print("grads: ", grads)
+                #self.global_model.optimizer.apply_gradients(zip(grads, self.global_model.trainable_weights))
+                self.optimizer.apply_gradients(zip(grads, self.global_model.trainable_weights))
+                self.optimizer.apply_gradients(zip(grads, fc.trainable_weights))
 
-                average_loss = np.sum(loss_values) / train_samples
-                print("Thread: ", self.idx, "\tEpoch: ", epoch_idx, "\tAverage loss: ", average_loss, "\tAccuracy: ", 1-average_loss)
+                self.loss_metric(loss)
+
+                if step % 100 == 0:
+                  print('Epoch: %s\tThread: %s\tstep %s\tmean loss = %s\n\tmean accuracy = %s' % (epoch, str(self.idx), step, self.loss_metric.result(), self.accuracy.result()))
+
+                if step % self.update_batches == 0:
+                    #self.loss_metric.reset_states()
+                    #self.accuracy.reset_states()
+                    fc.set_weights(copy.deepcopy(self.global_model.get_weights()))
