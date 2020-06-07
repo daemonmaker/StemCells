@@ -54,7 +54,7 @@ class Worker(threading.Thread):
 
     def run(self):
         with self.coordinator.stop_on_exception():
-            (x_train, y_train), (x_valid, y_valid) = tf.keras.datasets.mnist.load_data()
+            (x_train, y_train), (x_valid, y_valid) = tf.keras.datasets.fashion_mnist.load_data()
             x_train = x_train.astype('float32') / 255
             x_valid = x_valid.astype('float32') / 255
             y_train = tf.keras.backend.one_hot(y_train, self.output_size)
