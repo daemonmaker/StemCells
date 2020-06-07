@@ -19,11 +19,13 @@ class Worker(threading.Thread):
         self.output_size = self.kwargs['output_size']
         self.learning_rate = self.kwargs['learning_rate']
         self.dropout_rate = self.kwargs['dropout_rate']
-        self.batch_size = self.kwargs['batch_size']    
+        self.batch_size = self.kwargs['batch_size']
         self.epochs = self.kwargs['epochs']
         self.global_model = self.kwargs['global_model']
         self.model = self.kwargs['model']
         self.update_batches = self.kwargs['update_batches']
+        self.regenerate_masks = self.kwargs['regenerate_masks']
+        self.mask_generation_batches = self.kwargs['mask_generation_batches']
 
 
         self.inputs = {
@@ -45,6 +47,8 @@ class Worker(threading.Thread):
     def create_masks(self, batch_size):
         mask = np.random.rand(1, self.hidden_layer_size) <= self.dropout_rate
         mask = mask.astype(np.float32)
+        print("np.sum(mask): ", np.sum(mask))
+        print("mask: ", mask)
         mask = np.tile(mask, (batch_size, 1))
         return mask
 
@@ -53,10 +57,10 @@ class Worker(threading.Thread):
             (x_train, y_train), (x_valid, y_valid) = tf.keras.datasets.mnist.load_data()
             x_train = x_train.astype('float32') / 255
             x_valid = x_valid.astype('float32') / 255
-            y_train = tf.keras.backend.one_hot(y_train, 10)
-            y_valid = tf.keras.backend.one_hot(y_valid, 10)
-            #masks_train = np.ones((x_train.shape[0], 128))
-            masks_train = self.create_masks(x_train.shape[0])
+            y_train = tf.keras.backend.one_hot(y_train, self.output_size)
+            y_valid = tf.keras.backend.one_hot(y_valid, self.output_size)
+            total_samples = x_train.shape[0]
+            masks_train = self.create_masks(total_samples) # Creates the same mask for every sample, therefore it describes a single network
             masks_valid = np.ones((x_valid.shape))
             print("x_train.shape: ", x_train.shape)
             print("y_train.shape: ", y_train.shape)
@@ -83,14 +87,16 @@ class Worker(threading.Thread):
               #self.model.copy_weights(self.global_model)
               #self.loss_metric.reset_states()
               #self.accuracy.reset_states()
-              fc.set_weights(copy.deepcopy(self.global_model.get_weights()))
+              if self.update_batches > 0:
+                  fc.set_weights(copy.deepcopy(self.global_model.get_weights()))
 
               # Iterate over the batches of the dataset.
               #for step, (x_train, y_train) in enumerate(train_dataset):
               for step, (x_train, masks_train, y_train) in enumerate(train_dataset):
                 with tf.GradientTape() as tape:
-                  #masks = np.ones((x_train.shape[0], 128))
-                  #masks_train = self.create_masks(x_train.shape[0])
+                  #masks = np.ones((x_train.shape[0], self.hidden_layer_size))
+                  if self.regenerate_masks and (step == 0 or self.mask_generation_batches % step == 0):
+                      masks_train = self.create_masks(x_train.shape[0])
                   #logits = fc([x_train, masks])
                   logits = fc([x_train, masks_train])
                   # Compute reconstruction loss
@@ -101,16 +107,16 @@ class Worker(threading.Thread):
 
                 grads = tape.gradient(loss, fc.trainable_weights)
                 #print("grads: ", grads)
-                #self.global_model.optimizer.apply_gradients(zip(grads, self.global_model.trainable_weights))
-                self.optimizer.apply_gradients(zip(grads, self.global_model.trainable_weights))
                 self.optimizer.apply_gradients(zip(grads, fc.trainable_weights))
+                self.optimizer.apply_gradients(zip(grads, self.global_model.trainable_weights))
 
                 self.loss_metric(loss)
 
                 if step % 100 == 0:
                   print('Epoch: %s\tThread: %s\tstep %s\tmean loss = %s\n\tmean accuracy = %s' % (epoch, str(self.idx), step, self.loss_metric.result(), self.accuracy.result()))
 
-                if step % self.update_batches == 0:
+                if self.update_batches > 0 and step % self.update_batches == 0:
+                    #print("Copying weights")
                     #self.loss_metric.reset_states()
                     #self.accuracy.reset_states()
                     fc.set_weights(copy.deepcopy(self.global_model.get_weights()))
